@@ -12,7 +12,7 @@ const { CalorieSettingsTab } = require("./ui/settings-tab");
 /** ---------- Defaults & helpers ---------- */
 
 // Styles are now provided by styles.css
-const CA_CSS = null;
+const CA_CSS = `
 .ca-container { display:flex; flex-direction:column; height:100%; min-height:0; overflow-y:hidden; -webkit-overflow-scrolling: touch; scroll-padding-bottom: calc(var(--kb-inset, 0px) + 24px); transform: translateY(calc(-1 * var(--kb-inset, 0px))); transition: transform 180ms ease-out; will-change: transform; background:#1e1e1e; }
 /* Обсидиан-хак: гарантируем min-height:0 даже если родитель задаёт иное */
 .view-content .ca-container { min-height: 0 !important; }
@@ -283,176 +283,26 @@ const CA_CSS = null;
 .ca-meal-actions { margin-top: 8px; }
 `;
 
-function bytesToBase64(bytes) {
-  let binary = "";
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
-}
+// moved to utils/bytes.js
 
-function formatMacros(per) {
-  if (!per) return "—";
-  const n = (x) => (x == null ? "—" : Number(x).toFixed(1));
-  return `${n(per.calories)} ккал / Б ${n(per.proteins)} г / Ж ${n(per.fats)} г / У ${n(per.carbohydrates)} г (на 100 г)`;
-}
+// moved to utils/macros.js
 
-function toNum(v) {
-  if (v == null) return null;
-  if (typeof v === 'number') return isFinite(v) ? v : null;
-  if (typeof v === 'string') {
-    // вытащим первое число (может быть '123.4 ккал' или '≈ 56')
-    const m = v.replace(',', '.').match(/[-+]?\d+(?:\.\d+)?/);
-    if (m) return Number(m[0]);
-    return null;
-  }
-  return null;
-}
+// moved to utils/macros.js
 
-function extractMacros(obj) {
-  if (!obj) return {};
-  // Возможные ключи-синонимы
-  const map = {
-    calories: ['calories','kcal','cal','energy','калории'],
-    proteins: ['proteins','protein','белки','белок'],
-    fats: ['fats','fat','жиры','жир'],
-    carbohydrates: ['carbohydrates','carbs','углеводы','углеводы,г']
-  };
-  const out = {};
-  for (const key in map) {
-    for (const k of map[key]) {
-      if (obj[k] != null) { out[key] = toNum(obj[k]); break; }
-    }
-  }
-  return out;
-}
+// moved to utils/macros.js
 
 // Попытка извлечь макросы из произвольного текста
-function extractMacrosFromText(text) {
-  if (typeof text !== 'string' || !text) return {};
-  const norm = text.replace(/,/g, '.');
-  const re = (r)=> { const m = norm.match(r); return m? Number(m[1]) : null; };
-  const calories = re(/([\d.]+)\s*(?:ккал|kcal|кал)/i);
-  const proteins = re(/(?:б|белк(?:и|а)?)\s*([\d.]+)/i);
-  const fats = re(/(?:ж|жир(?:ы|а)?)\s*([\d.]+)/i);
-  const carbohydrates = re(/(?:у|углевод(?:ы|а)?)\s*([\d.]+)/i);
-  const out = { calories, proteins, fats, carbohydrates };
-  return Object.values(out).some(v=> v!=null) ? out : {};
-}
+// moved to utils/macros.js
 
 // Глубокий поиск макросов по ответу любого вида (объект/массив/строка)
-function deepExtractMacros(x, maxDepth=4) {
-  if (!x || maxDepth < 0) return {};
-  if (typeof x === 'string') return extractMacrosFromText(x);
-  if (Array.isArray(x)) {
-    for (const el of x) {
-      const m = deepExtractMacros(el, maxDepth-1);
-      if (Object.values(m).some(v=> v!=null)) return m;
-    }
-    return {};
-  }
-  if (typeof x === 'object') {
-    // сначала проверим прямые ключи
-    const direct = extractMacros(x);
-    if (Object.values(direct).some(v=> v!=null)) return direct;
-    // затем рекурсивно
-    for (const k of Object.keys(x)) {
-      const m = deepExtractMacros(x[k], maxDepth-1);
-      if (Object.values(m).some(v=> v!=null)) return m;
-    }
-  }
-  return {};
-}
+// moved to utils/macros.js
 
 // Более "размытый" поиск — ловим ключи по регуляркам: calories_100g, cals, prot_g, fatsTotal, carbsNet и т.п.
-function deepExtractMacrosLoose(x, maxDepth=4) {
-  if (!x || maxDepth < 0) return {};
-  if (typeof x === 'string') return extractMacrosFromText(x);
-  if (Array.isArray(x)) {
-    for (const el of x) { const m = deepExtractMacrosLoose(el, maxDepth-1); if (Object.values(m).some(v=> v!=null)) return m; }
-    return {};
-  }
-  if (typeof x === 'object') {
-    const out = { calories:null, proteins:null, fats:null, carbohydrates:null };
-    const setIf = (key,val) => { const n = toNum(val); if (n!=null && out[key]==null) out[key]=n; };
-    const ck = /cal|kcal|ккал|energy|кал/i;
-    const pk = /prot|protein|белк/i;
-    const fk = /fat|жир/i;
-    const ck2 = /carb|углевод/i;
-    for (const [k,v] of Object.entries(x)) {
-      if (typeof v === 'object' && v) {
-        const m = deepExtractMacrosLoose(v, maxDepth-1);
-        if (Object.values(m).some(n=> n!=null)) return m;
-      } else {
-        if (ck.test(k)) setIf('calories', v);
-        if (pk.test(k)) setIf('proteins', v);
-        if (fk.test(k)) setIf('fats', v);
-        if (ck2.test(k)) setIf('carbohydrates', v);
-      }
-    }
-    if (Object.values(out).some(n=> n!=null)) return out;
-  }
-  return {};
-}
+// moved to utils/macros.js
 
 // Парсит таблицу приёмов внутри секции дня и возвращает {rows:[...], sums}
-function parseDailyTable(section) {
-  // Новая структура: | Время | Блюдо | Ккал/100г | Б/100г | Ж/100г | У/100г | Порция г | Ккал | Б | Ж | У | Комментарий |
-  const lines = section.split(/\n/);
-  const rows = [];
-  const headerMatch = /\|\s*Время\s*\|\s*Блюдо\s*\|\s*Ккал\/100г/i;
-  for (const line of lines) {
-    if (!line.startsWith('|')) continue;
-    if (/^\|[- :]+\|$/.test(line)) continue; // separator only
-    if (headerMatch.test(line)) continue;
-    const partsRaw = line.split('|');
-    let parts = partsRaw.map(p=>p.trim());
-    if (parts[0] === '') parts = parts.slice(1);
-    if (parts[parts.length-1] === '') parts = parts.slice(0,-1);
-    if (parts.length < 12) continue; // not full row
-    const [time,item,kcal100,prot100,fat100,carb100,portion,totalK,totalP,totalF,totalC,comment] = parts;
-    rows.push({
-      time,
-      item,
-      kcal100: toNum(kcal100),
-      prot100: toNum(prot100),
-      fat100: toNum(fat100),
-      carb100: toNum(carb100),
-      portion: toNum(portion),
-      totalK: toNum(totalK),
-      totalP: toNum(totalP),
-      totalF: toNum(totalF),
-      totalC: toNum(totalC),
-      comment
-    });
-  }
-  // Пересчёт итогов из фактических total колонок (если пусты — считаем из per100 * portion)
-  const sums = { calories:0, proteins:0, fats:0, carbohydrates:0 };
-  for (const r of rows) {
-    const k = (r.totalK!=null ? r.totalK : (r.kcal100!=null && r.portion!=null ? r.kcal100 * r.portion / 100 : null));
-    const p = (r.totalP!=null ? r.totalP : (r.prot100!=null && r.portion!=null ? r.prot100 * r.portion / 100 : null));
-    const f = (r.totalF!=null ? r.totalF : (r.fat100!=null && r.portion!=null ? r.fat100 * r.portion / 100 : null));
-    const c = (r.totalC!=null ? r.totalC : (r.carb100!=null && r.portion!=null ? r.carb100 * r.portion / 100 : null));
-    if (k!=null) sums.calories += k;
-    if (p!=null) sums.proteins += p;
-    if (f!=null) sums.fats += f;
-    if (c!=null) sums.carbohydrates += c;
-  }
-  return { rows, sums };
-}
 
-function nowStamp() {
-  // Время в московском часовом поясе (Europe/Moscow), формат: YYYY-MM-DD HH:MM:SS
-  const parts = new Intl.DateTimeFormat('en-CA', { // en-CA даёт YYYY-MM-DD порядок для даты
-    timeZone: 'Europe/Moscow',
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit',
-    hour12: false
-  }).formatToParts(new Date());
-  const get = (t)=> parts.find(p=>p.type===t)?.value || '';
-  return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}:${get('second')}`;
-}
+// nowStamp moved to utils/time.js
 
 /** ---------- The View (panel UI) ---------- */
 class CalorieView extends ItemView {
@@ -1288,7 +1138,11 @@ class CalorieView extends ItemView {
       this.pushAssistant(`**База получена.**\n${formatMacros(res.per_100g)}\n${msg}`, chat);
 
       if (this.plugin.settings.attachPhoto) {
-        await this.savePhotoToVault(file);
+        const p = await note.savePhotoToVault(this.plugin, file);
+        try {
+          this.state.history.push({ role: 'assistant', text: `Фото сохранено: ${p}` });
+          this.plugin.saveLastSession(this.state);
+        } catch {}
       }
     } catch (e) {
       console.error(e);
@@ -1666,51 +1520,13 @@ class CalorieView extends ItemView {
     return callWorker(url, payload);
   }
 
-  /** ---------- Vault helpers ---------- */
-  async ensureFolder(path) {
-    const { vault } = this.app;
-    const adapter = vault.adapter;
-    const lastSlash = path.lastIndexOf("/");
-    if (lastSlash === -1) return; // root
-    const folder = path.slice(0, lastSlash);
-    if (!(await adapter.exists(folder))) {
-      await adapter.mkdir(folder);
-    }
-  }
-
-  async appendToNote(path, content) {
-    const { vault } = this.app;
-    await this.ensureFolder(path);
-    const exists = await vault.adapter.exists(path);
-    const stamp = nowStamp();
-    const block = `\n\n---\n**${stamp}**\n\n${content}\n`;
-    if (exists) {
-      const file = vault.getAbstractFileByPath(path);
-      await vault.modify(file, (await vault.read(file)) + block);
-    } else {
-      await vault.create(path, `# Food Log\n${block}`);
-    }
-  }
-
-  async savePhotoToVault(file) {
-    try {
-      const folder = this.plugin.settings.photosFolder || DEFAULTS.photosFolder;
-      await this.ensureFolder(folder + "/a"); // чтобы точно создалась
-      const ext = (file.name?.split(".").pop() || "jpg").toLowerCase();
-      const name = `food_${Date.now()}.${ext}`;
-      const arr = new Uint8Array(await file.arrayBuffer());
-      await this.app.vault.createBinary(`${folder}/${name}`, arr);
-  this.state.history.push({ role: "assistant", text: `Фото сохранено: ${folder}/${name}` });
-      this.plugin.saveLastSession(this.state);
-    } catch (e) {
-      console.warn("Не удалось сохранить фото:", e);
-    }
-  }
+  /** ---------- Vault helpers moved to services/note ---------- */
 }
 
 /** ---------- Settings Tab moved to ui/settings-tab.js ---------- */
 
 /** ---------- Plugin ---------- */
+ 
 module.exports = class CalorieAssistantPlugin extends Plugin {
   async onload() {
     // styles are loaded from styles.css automatically by Obsidian

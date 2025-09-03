@@ -27,6 +27,16 @@ async function appendToNote(plugin, path, content) {
   }
 }
 
+async function savePhotoToVault(plugin, file) {
+  const folder = plugin.settings.photosFolder || DEFAULTS.photosFolder;
+  await ensureFolder(plugin, folder + "/a");
+  const ext = (file.name?.split(".").pop() || "jpg").toLowerCase();
+  const name = `food_${Date.now()}.${ext}`;
+  const arr = new Uint8Array(await file.arrayBuffer());
+  await plugin.app.vault.createBinary(`${folder}/${name}`, arr);
+  return `${folder}/${name}`;
+}
+
 async function insertMealAndUpdateTable(plugin, path, resJson) {
   const { vault } = plugin.app;
   const file = vault.getAbstractFileByPath(path);
@@ -338,5 +348,5 @@ module.exports = {
   updateDailySection,
   updateDailyRunningTotals,
   removeMealBlockById,
+  savePhotoToVault,
 };
-
