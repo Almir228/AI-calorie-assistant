@@ -7,6 +7,7 @@ const { formatMacros, toNum, extractMacros, extractMacrosFromText, deepExtractMa
 const { callWorker } = require("./services/worker");
 const note = require("./services/note");
 const { registerVaultModifyWatchers, registerNoteClickHandlers } = require("./services/watchers");
+const { CalorieSettingsTab } = require("./ui/settings-tab");
 
 /** ---------- Defaults & helpers ---------- */
 
@@ -1707,115 +1708,7 @@ class CalorieView extends ItemView {
   }
 }
 
-/** ---------- Settings Tab ---------- */
-class CalorieSettingsTab extends PluginSettingTab {
-  constructor(app, plugin) {
-    super(app, plugin);
-    this.plugin = plugin;
-  }
-  display() {
-    const { containerEl } = this;
-    containerEl.empty();
-    containerEl.createEl("h2", { text: "Calorie Assistant — настройки" });
-
-    new Setting(containerEl)
-      .setName("Worker URL")
-      .setDesc("Адрес Cloudflare Worker (POST).")
-      .addText(t => t
-        .setPlaceholder(DEFAULTS.workerUrl)
-        .setValue(this.plugin.settings.workerUrl || DEFAULTS.workerUrl)
-        .onChange(async (v) => { this.plugin.settings.workerUrl = v.trim(); await this.plugin.saveSettings(); }));
-
-    new Setting(containerEl)
-      .setName("Заметка по умолчанию")
-      .setDesc("Куда писать отчёт (можно с путём). Пример: Food Log.md или Logs/Food.md")
-      .addText(t => t
-        .setPlaceholder(DEFAULTS.notePath)
-        .setValue(this.plugin.settings.notePath || DEFAULTS.notePath)
-        .onChange(async (v) => { this.plugin.settings.notePath = v.trim(); await this.plugin.saveSettings(); }));
-
-    new Setting(containerEl)
-      .setName("Режим добавления")
-      .setDesc("Если включено — отчёты дописываются в конец заметки.")
-      .addToggle(t => t
-        .setValue(this.plugin.settings.appendMode ?? DEFAULTS.appendMode)
-        .onChange(async (v) => { this.plugin.settings.appendMode = v; await this.plugin.saveSettings(); }));
-
-    new Setting(containerEl)
-      .setName("Сохранять фото в хранилище")
-      .addToggle(t => t
-        .setValue(this.plugin.settings.attachPhoto ?? DEFAULTS.attachPhoto)
-        .onChange(async (v) => { this.plugin.settings.attachPhoto = v; await this.plugin.saveSettings(); }));
-
-    new Setting(containerEl)
-      .setName("На мобильном открывать камеру по умолчанию")
-      .setDesc("Если выключено — будет открываться галерея для выбора уже сделанных фото.")
-      .addToggle(t => t
-        .setValue(this.plugin.settings.cameraDefault ?? DEFAULTS.cameraDefault)
-        .onChange(async (v) => { this.plugin.settings.cameraDefault = v; await this.plugin.saveSettings(); }));
-
-    new Setting(containerEl)
-      .setName("Папка для фото")
-      .setDesc("Будет создана при необходимости.")
-      .addText(t => t
-        .setPlaceholder(DEFAULTS.photosFolder)
-        .setValue(this.plugin.settings.photosFolder || DEFAULTS.photosFolder)
-        .onChange(async (v) => { this.plugin.settings.photosFolder = v.trim(); await this.plugin.saveSettings(); }));
-
-    new Setting(containerEl)
-      .setName("Порция по умолчанию (г)")
-      .addText(t => t
-        .setPlaceholder(String(DEFAULTS.defaultPortion))
-        .setValue(String(this.plugin.settings.defaultPortion ?? DEFAULTS.defaultPortion))
-        .onChange(async (v) => { this.plugin.settings.defaultPortion = Number(v) || 0; await this.plugin.saveSettings(); }));
-
-    containerEl.createEl('h3', { text: 'Дневные цели (для процентов в итогах)' });
-    const targets = (this.plugin.settings.dailyTargets = Object.assign({}, DEFAULTS.dailyTargets, this.plugin.settings.dailyTargets||{}));
-
-    const nutrientInput = (label, key) => {
-      new Setting(containerEl)
-        .setName(label)
-        .addText(t => t
-          .setPlaceholder('0')
-          .setValue(String(targets[key]||0))
-          .onChange(async (v)=> { targets[key] = Number(v)||0; this.plugin.settings.dailyTargets = targets; await this.plugin.saveSettings(); }));
-    };
-    nutrientInput('Калории (ккал)', 'calories');
-    nutrientInput('Белки (г)', 'proteins');
-    nutrientInput('Жиры (г)', 'fats');
-    nutrientInput('Углеводы (г)', 'carbohydrates');
-    const hint = containerEl.createEl('div', { text: 'Оставь 0, если не хочешь показывать процент по какому-то показателю.' });
-    hint.style.fontSize = '12px';
-    hint.style.opacity = '0.7';
-
-    containerEl.createEl('h3', { text: 'Чат' });
-    new Setting(containerEl)
-      .setName('Максимум сообщений в истории')
-      .setDesc('Старые сообщения будут удаляться из панели')
-      .addText(t => t
-        .setPlaceholder(String(DEFAULTS.chatHistoryLimit))
-        .setValue(String(this.plugin.settings.chatHistoryLimit ?? DEFAULTS.chatHistoryLimit))
-        .onChange(async v => { this.plugin.settings.chatHistoryLimit = Math.max(5, Number(v)||DEFAULTS.chatHistoryLimit); await this.plugin.saveSettings(); }));
-    new Setting(containerEl)
-      .setName('Очищать карточку после экспорта')
-      .addToggle(t => t
-        .setValue(this.plugin.settings.autoClearOnFinalize ?? DEFAULTS.autoClearOnFinalize)
-        .onChange(async v => { this.plugin.settings.autoClearOnFinalize = v; await this.plugin.saveSettings(); }));
-
-    new Setting(containerEl)
-      .setName('Экспорт в текущую заметку (active file)')
-      .setDesc('Если включено — новый приём пищи добавляется в открытую заметку, а в конце заметки ведётся таблица-итог.')
-      .addToggle(t => t
-        .setValue(this.plugin.settings.exportToActiveNote ?? DEFAULTS.exportToActiveNote)
-        .onChange(async v => { this.plugin.settings.exportToActiveNote = v; await this.plugin.saveSettings(); }));
-
-    new Setting(containerEl)
-      .setName('Сворачивать панель кнопок при открытии')
-      .addToggle(t => t
-        .setValue(this.plugin.settings.controlsCollapsed ?? DEFAULTS.controlsCollapsed)
-        .onChange(async v => { this.plugin.settings.controlsCollapsed = v; await this.plugin.saveSettings(); }));
-  }
-}
+/** ---------- Settings Tab moved to ui/settings-tab.js ---------- */
 
 /** ---------- Plugin ---------- */
 module.exports = class CalorieAssistantPlugin extends Plugin {
@@ -1967,61 +1860,4 @@ module.exports = class CalorieAssistantPlugin extends Plugin {
 
 // Вспомогательная функция: удалить из Markdown весь блок Приёма, окружающий данный MEAL_ID
 // Ищет ближайший разделитель \n--- перед заголовком "#### Приём пищи" и следующий \n--- или конец файла
-function removeMealBlockById(text, mealId) {
-  try {
-    const token = `<!--MEAL_ID:${mealId}-->`;
-    const idIdx = text.indexOf(token);
-    if (idIdx === -1) return { text, removed: false };
-
-    // 1) Точно определяем начало блока: последнее вхождение шаблона начала блока приёма до токена
-    // Шаблон: (начало строки или \n)---\n#### Приём пищи ...
-    const starts = [];
-    const startRe = /(^|\n)---\r?\n#### Приём пищи[^\n]*\n/g;
-    let m;
-    while ((m = startRe.exec(text)) !== null) {
-      const start = m.index + (m[1] ? m[1].length : 0); // позиция непосредственно перед '---'
-      if (start < idIdx) starts.push(start);
-      else break; // дальше только после токена, можно остановиться
-    }
-    let startIdx = starts.length ? starts[starts.length - 1] : -1;
-
-    if (startIdx === -1) {
-      // Fallback: найдём ближайший заголовок #### Приём пищи перед токеном, затем подняться к предыдущей пустой строке или началу файла
-      const headerRe = /(^|\n)#### Приём пищи[^\n]*\n/g;
-      let headerIdx = -1;
-      while ((m = headerRe.exec(text)) !== null) {
-        if (m.index < idIdx) headerIdx = m.index + (m[1] ? m[1].length : 0); else break;
-      }
-      if (headerIdx !== -1) {
-        // Поднимемся до ближайшего разделителя блока '---' перед заголовком, если есть, иначе начала файла/пустой строки
-        const uptoHeader = text.slice(0, headerIdx);
-        const dashIdx = uptoHeader.lastIndexOf('\n---\r?\n');
-        startIdx = dashIdx !== -1 ? dashIdx + 1 : headerIdx; // +1 чтобы включить начальный перевод строки
-      } else {
-        // Не нашли ничего осмысленного — не рискуем
-        return { text, removed: false };
-      }
-    }
-
-    // 2) Конец блока — следующее начало блока приёма или граница таблицы, иначе конец файла
-    let endIdx = text.length;
-    startRe.lastIndex = startIdx + 1; // продолжим поиск стартов после текущего начала
-    while ((m = startRe.exec(text)) !== null) {
-      const s = m.index + (m[1] ? m[1].length : 0);
-      if (s > idIdx) { endIdx = s; break; }
-    }
-    // Не заходим на таблицу приёмов
-    const tableMarker = '<!--MEALS_TABLE_START-->';
-    const tableStartIdx = text.indexOf(tableMarker, idIdx);
-    if (tableStartIdx !== -1 && tableStartIdx < endIdx) {
-      endIdx = tableStartIdx;
-    }
-
-    // Вырезать блок и почистить лишние пустые строки
-    let newText = text.slice(0, startIdx) + text.slice(endIdx);
-    newText = newText.replace(/\n{3,}/g, '\n\n').replace(/^\s+$/gm, '');
-    return { text: newText, removed: true };
-  } catch {
-    return { text, removed: false };
-  }
-}
+// removeMealBlockById moved to services/note.js
