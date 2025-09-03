@@ -5,6 +5,8 @@ const { nowStamp } = require("./utils/time");
 const { bytesToBase64 } = require("./utils/bytes");
 const { formatMacros, toNum, extractMacros, extractMacrosFromText, deepExtractMacros, deepExtractMacrosLoose } = require("./utils/macros");
 const { callWorker } = require("./services/worker");
+const note = require("./services/note");
+const { registerVaultModifyWatchers, registerNoteClickHandlers } = require("./services/watchers");
 
 /** ---------- Defaults & helpers ---------- */
 
@@ -875,7 +877,7 @@ class CalorieView extends ItemView {
           this.pushAssistant(`Учёл порцию${title} (${grams} г) → ${n(t.calories)} ккал / Б ${n(t.proteins)} / Ж ${n(t.fats)} / У ${n(t.carbohydrates)}`, chat);
         } catch {}
         this.renderChat(chat, true); this.plugin.saveLastSession(this.state);
-        const path = this.plugin.settings.notePath || DEFAULTS.notePath; await this.updateDailySection(path);
+        const path = this.plugin.settings.notePath || DEFAULTS.notePath; await note.updateDailySection(this.plugin, path);
         new Notice('Порция учтена.');
       });
       const applyBtn = panelPhoto.createEl("button", { text: "Применить правку" });
@@ -920,7 +922,7 @@ class CalorieView extends ItemView {
       this.pushAssistant(`Учёл порцию${title} (${grams} г) → ${n(t.calories)} ккал / Б ${n(t.proteins)} / Ж ${n(t.fats)} / У ${n(t.carbohydrates)}`, this.containerEl.querySelector('.ca-chat'));
     } catch {}
     this.renderChat(this.containerEl.querySelector('.ca-chat'), true); this.plugin.saveLastSession(this.state);
-    const path = this.plugin.settings.notePath || DEFAULTS.notePath; await this.updateDailySection(path);
+    const path = this.plugin.settings.notePath || DEFAULTS.notePath; await note.updateDailySection(this.plugin, path);
     new Notice('Порция учтена.');
   });
   manualAiBtn.addEventListener('click', async () => {
@@ -1210,7 +1212,7 @@ class CalorieView extends ItemView {
       let changed = false;
       if (mealId) {
         // Удаляем целиком блок приёма, ориентируясь на ближайшие разделители/заголовок
-        const res = removeMealBlockById(text, mealId);
+        const res = note.removeMealBlockById(text, mealId);
         if (res.removed) {
           text = res.text;
           changed = true;
@@ -1224,7 +1226,7 @@ class CalorieView extends ItemView {
       if (changed) {
         await vault.modify(file, text);
         // Пересчёт таблиц/итогов (если используется дневной режим)
-        await this.updateDailySection(path);
+        await note.updateDailySection(this.plugin, path);
         new Notice('Приём удалён');
       }
 
@@ -1344,14 +1346,20 @@ class CalorieView extends ItemView {
       const path = useActive ? activeFile.path : (this.plugin.settings.notePath || DEFAULTS.notePath);
 
       if (useActive) {
-        await this.insertMealAndUpdateTable(path, merged);
+        const { mealId, stamp } = await note.insertMealAndUpdateTable(this.plugin, path, merged);
+        // Сохраним в состояние для возможных дальнейших действий
+        try {
+          const updated = Object.assign({}, merged, { mealId, ts: stamp });
+          this.state.currentJson = updated;
+          await this.plugin.saveLastSession(this.state);
+        } catch {}
         this.pushAssistant("Приём пищи добавлен в текущую заметку и учтён в таблице.", chat);
       } else {
         const md = res.markdown || "";
-        await this.appendToNote(path, md);
+        await note.appendToNote(this.plugin, path, md);
         // старый сценарий с дневными итогами
         this.recordEntry(merged);
-        await this.updateDailySection(path);
+        await note.updateDailySection(this.plugin, path);
         this.pushAssistant("Итог сохранён в заметку: " + path + " (дневной раздел обновлён)", chat);
       }
       if (this.plugin.settings.autoClearOnFinalize) {
@@ -1842,173 +1850,9 @@ module.exports = class CalorieAssistantPlugin extends Plugin {
 
     this.addSettingTab(new CalorieSettingsTab(this.app, this));
 
-    // Авто пересчёт при ручном редактировании файла
-    this._ignoreModify = false;
-  this.registerEvent(this.app.vault.on('modify', async (file) => {
-      try {
-        if (this._ignoreModify) return;
-        const targetPath = this.settings.notePath || DEFAULTS.notePath;
-        if (file.path !== targetPath) return;
-        const content = await this.app.vault.read(file);
-        const today = nowStamp().slice(0,10);
-        if (!content.includes(`## ${today}`)) return; // нет секции сегодня — ничего
-        // Используем ту же логику что и в view, но без вставки строк: просто пересчёт
-  const heading = `## ${today}`;
-  const marker = `<!--DAILY_TOTALS:${today}-->`;
-        const start = content.indexOf(heading);
-        const next = content.indexOf('\n## ', start+heading.length);
-        let section = next === -1 ? content.slice(start) : content.slice(start, next);
-        // Пересборка таблицы Итоги из Базы при ручном редактировании
-  // heading и marker уже определены выше
-        // удалим старую комбинированную таблицу
-        section = section.replace(/\|\s*Время\s*\|\s*Блюдо\s*\|\s*Ккал\/100г[\s\S]*?\n\n/g, '');
-        // Распарсим базу
-        const baseHeader = '| Время | Блюдо | Ккал/100г | Б/100г | Ж/100г | У/100г | Порция г | Комментарий |';
-        const baseIdx = section.indexOf(baseHeader);
-        let baseRows = [];
-        if (baseIdx !== -1) {
-          let baseEnd = section.indexOf('\n\n', baseIdx); if (baseEnd === -1) baseEnd = section.length;
-          const basePart = section.slice(baseIdx, baseEnd);
-          const lines = basePart.split(/\n/).slice(2);
-          for (const line of lines) {
-            if (!line.startsWith('|')) continue;
-            const cols = line.split('|').map(c=>c.trim()); if (cols.length < 9) continue;
-            baseRows.push({
-              time: cols[1], item: cols[2], kcal100: toNum(cols[3]), prot100: toNum(cols[4]), fat100: toNum(cols[5]), carb100: toNum(cols[6]), portion: toNum(cols[7]), comment: cols[8]||''
-            });
-          }
-        }
-        const fmtCell = (x)=> (x==null||isNaN(x)?'—':Number(x).toFixed(1).replace(/\.0$/,''));
-        const portionHeader = '| Время | Блюдо | Порция г | Ккал | Б | Ж | У | Комментарий |';
-        const portionSep = '|-------|-------|---------:|-----:|--:|--:|--:|-------------|';
-        const portionRows = baseRows.map(r => {
-          const k = (r.kcal100!=null && r.portion!=null)? r.kcal100*r.portion/100 : null;
-          const p = (r.prot100!=null && r.portion!=null)? r.prot100*r.portion/100 : null;
-          const f = (r.fat100!=null && r.portion!=null)? r.fat100*r.portion/100 : null;
-          const c = (r.carb100!=null && r.portion!=null)? r.carb100*r.portion/100 : null;
-          return `| ${r.time} | ${r.item} | ${fmtCell(r.portion)} | ${fmtCell(k)} | ${fmtCell(p)} | ${fmtCell(f)} | ${fmtCell(c)} | ${r.comment} |`;
-        });
-        const headerPos = section.indexOf(portionHeader);
-        if (headerPos !== -1) {
-          const afterHeader = section.indexOf('\n', headerPos + portionHeader.length) + 1;
-          const afterSep = section.indexOf('\n', afterHeader) + 1;
-          let portionEnd = section.indexOf('\n\n', afterSep); if (portionEnd === -1) portionEnd = section.length;
-          section = section.slice(0, headerPos) + portionHeader + '\n' + portionSep + '\n' + portionRows.join('\n') + '\n' + section.slice(portionEnd);
-        }
-        const sums = baseRows.reduce((acc,r)=>{
-          const k=(r.kcal100!=null && r.portion!=null)? r.kcal100*r.portion/100:null; if (k!=null) acc.calories+=k;
-          const p=(r.prot100!=null && r.portion!=null)? r.prot100*r.portion/100:null; if (p!=null) acc.proteins+=p;
-          const f=(r.fat100!=null && r.portion!=null)? r.fat100*r.portion/100:null; if (f!=null) acc.fats+=f;
-          const c=(r.carb100!=null && r.portion!=null)? r.carb100*r.portion/100:null; if (c!=null) acc.carbohydrates+=c;
-          return acc; }, {calories:0,proteins:0,fats:0,carbohydrates:0});
-        const fmt = (n)=> (n==null||isNaN(n)?'—':Math.round(n));
-        const targets = this.settings.dailyTargets || DEFAULTS.dailyTargets;
-        const pct = (val,t)=> t>0? Math.round(val/t*100): null;
-        const pctStr = (p)=> p==null?'' : `${p}%`;
-        const totalLine = `${marker}\n**Итого сейчас:** ${fmt(sums.calories)} ккал / Б ${fmt(sums.proteins)} / Ж ${fmt(sums.fats)} / У ${fmt(sums.carbohydrates)}` +
-          (targets.calories||targets.proteins||targets.fats||targets.carbohydrates
-            ? ` (К ${pctStr(pct(sums.calories,targets.calories))} / Б ${pctStr(pct(sums.proteins,targets.proteins))} / Ж ${pctStr(pct(sums.fats,targets.fats))} / У ${pctStr(pct(sums.carbohydrates,targets.carbohydrates))})` : '' );
-  const pairRe = new RegExp(`${marker}\\n\\*\\*Итого сейчас:[^\\n]*\\n?`,'g');
-  section = section.replace(pairRe, '');
-  section = section.replace(heading, heading+'\n'+totalLine);
-        const newContent = next === -1 ? content.slice(0,start) + section : content.slice(0,start) + section + content.slice(next);
-        if (newContent !== content) {
-          this._ignoreModify = true;
-          await this.app.vault.modify(file, newContent);
-          this._ignoreModify = false;
-        }
-      } catch (e) { console.warn('auto daily recalc failed', e); }
-    }));
-
-    // Синхронизация таблицы приёмов с удалением блоков (MEAL_ID)
-    this.registerEvent(this.app.vault.on('modify', async (file) => {
-      try {
-        if (this._ignoreModify) return;
-        const content = await this.app.vault.read(file);
-        const startMarker = '<!--MEALS_TABLE_START-->';
-        const endMarker = '<!--MEALS_TABLE_END-->';
-        const s = content.indexOf(startMarker);
-        const e = s === -1 ? -1 : content.indexOf(endMarker, s);
-        if (s === -1 || e === -1) return; // нет таблицы — выходим
-
-  const tableBlock = content.slice(s, e);
-  // MEAL_ID из таблицы
-  const tableIds = new Set(Array.from(tableBlock.matchAll(/<!--MEAL_ID:([A-Za-z0-9_-]+)-->/g)).map(m=>m[1]));
-  // Разбиваем контент на части: блоки приёмов вверху (before) и хвост (after)
-  let before = content.slice(0, s);
-  const after = content.slice(e);
-  // MEAL_ID только из части before (где лежат блоки приёмов)
-  const blockIds = new Set(Array.from(before.matchAll(/<!--MEAL_ID:([A-Za-z0-9_-]+)-->/g)).map(m=>m[1]));
-
-        const stale = [...tableIds].filter(id => !blockIds.has(id));
-        const orphanBlocks = [...blockIds].filter(id => !tableIds.has(id));
-
-  let newTable = tableBlock;
-  let newBefore = before;
-  let changed = false;
-
-        // Удаляем строки из таблицы, для которых нет блоков
-        if (stale.length) {
-          for (const id of stale) {
-            const re = new RegExp(`^.*<!--MEAL_ID:${id}-->.*$`, 'm');
-            const before = newTable;
-            newTable = newTable.replace(re, '');
-            if (newTable !== before) changed = true;
-          }
-          newTable = newTable.replace(/\n{3,}/g, '\n\n');
-        }
-
-        // Удаляем блоки приёмов, для которых нет строк в таблице (обратная синхронизация)
-        if (orphanBlocks.length) {
-          for (const id of orphanBlocks) {
-            const blockRe = new RegExp(`\n---\n#### Приём пищи[\s\S]*?<!--MEAL_ID:${id}-->[\s\S]*?(?=\n---|$)`, 'g');
-            const prev = newBefore;
-            newBefore = newBefore.replace(blockRe, '');
-            if (newBefore !== prev) changed = true;
-          }
-          newBefore = newBefore.replace(/\n{3,}/g, '\n\n');
-        }
-
-        if (!changed) return;
-  const newContent = newBefore + newTable + after;
-        if (newContent !== content) {
-          this._ignoreModify = true;
-          await this.app.vault.modify(file, newContent);
-          this._ignoreModify = false;
-        }
-      } catch (err) {
-        console.warn('sync meals table failed', err);
-      }
-    }));
-
-    // Глобальный обработчик кликов по кнопке "Обновить таблицу"
-    const clickHandler = async (evt) => {
-      const el = evt.target;
-      if (!(el instanceof HTMLElement)) return;
-      try {
-        const activeFile = this.app.workspace.getActiveFile?.();
-        if (!activeFile) return;
-        // refresh table
-        if (el.classList.contains('ca-refresh-table-btn')) {
-          await this.rebuildMealsTable(activeFile.path);
-          new Notice('Таблица обновлена');
-          return;
-        }
-        // delete meal inside note
-        if (el.classList.contains('ca-delete-meal-btn')) {
-          const mealId = el.getAttribute('data-meal-id');
-          await this.deleteMealByIdFromNote(activeFile.path, mealId);
-          await this.rebuildMealsTable(activeFile.path);
-          new Notice('Приём удалён');
-          return;
-        }
-      } catch (err) {
-        console.warn('note click handler failed', err);
-        new Notice('Ошибка операции');
-      }
-    };
-    document.addEventListener('click', clickHandler, true);
-    this.register(() => document.removeEventListener('click', clickHandler, true));
+    // Перенесено в services/watchers
+    registerVaultModifyWatchers(this);
+    registerNoteClickHandlers(this);
   }
 
   onunload() {}
@@ -2110,7 +1954,7 @@ module.exports = class CalorieAssistantPlugin extends Plugin {
       const file = vault.getAbstractFileByPath(path);
       if (!file) return;
       let text = await vault.read(file);
-      const res = removeMealBlockById(text, mealId);
+      const res = note.removeMealBlockById(text, mealId);
       text = res.text;
       const rowRe = new RegExp(`^.*<!--MEAL_ID:${mealId}-->.*$`, 'm');
       text = text.replace(rowRe, '');
