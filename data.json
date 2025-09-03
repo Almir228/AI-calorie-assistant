@@ -1,0 +1,102 @@
+{
+  "migrations": {},
+  "settings": {
+    "workerUrl": "https://holy-sky-7222.almirmunasipov5.workers.dev",
+    "notePath": "Food Log.md",
+    "appendMode": true,
+    "attachPhoto": true,
+    "photosFolder": "Food Photos",
+    "cameraDefault": false,
+    "defaultPortion": 0,
+    "dailyTargets": {
+      "calories": 0,
+      "proteins": 0,
+      "fats": 0,
+      "carbohydrates": 0
+    },
+    "chatHistoryLimit": 30,
+    "autoClearOnFinalize": true,
+    "controlsCollapsed": false,
+    "fileSectionCollapsed": false,
+    "exportToActiveNote": true
+  },
+  "lastSession": {
+    "currentJson": {
+      "item": "Неизвестно",
+      "description": "выа",
+      "per_100g": {
+        "calories": 0,
+        "proteins": 0,
+        "fats": 0,
+        "carbohydrates": 0
+      },
+      "message": "Описание недостаточно для определения блюда и оценки пищевой ценности. Предоставьте более полную информацию."
+    },
+    "history": [
+      {
+        "role": "user",
+        "text": "Оцени по тексту: выа"
+      },
+      {
+        "role": "user",
+        "text": "Оцени по тексту: выа"
+      },
+      {
+        "role": "user",
+        "text": "Оцени по тексту: выа"
+      },
+      {
+        "role": "user",
+        "text": "Оцени по тексту: выа"
+      },
+      {
+        "role": "user",
+        "text": "Оцени по тексту: выа"
+      },
+      {
+        "role": "user",
+        "text": "Оцени по тексту: выа"
+      },
+      {
+        "role": "user",
+        "text": "Оцени по тексту: выа"
+      },
+      {
+        "role": "user",
+        "text": "Оцени по тексту: выа"
+      },
+      {
+        "role": "user",
+        "text": "Оцени по тексту: выа"
+      },
+      {
+        "role": "user",
+        "text": "Оцени по тексту: выа"
+      },
+      {
+        "role": "user",
+        "text": "Оцени по тексту: выа"
+      },
+      {
+        "role": "assistant",
+        "text": "AI-оценка получена.\n0.0 ккал / Б 0.0 г / Ж 0.0 г / У 0.0 г (на 100 г)"
+      },
+      {
+        "role": "assistant",
+        "text": "AI-оценка получена.\n0.0 ккал / Б 0.0 г / Ж 0.0 г / У 0.0 г (на 100 г)"
+      },
+      {
+        "role": "assistant",
+        "text": "AI-оценка получена.\n0.0 ккал / Б 0.0 г / Ж 0.0 г / У 0.0 г (на 100 г)"
+      },
+      {
+        "role": "assistant",
+        "text": "AI-оценка получена.\n0.0 ккал / Б 0.0 г / Ж 0.0 г / У 0.0 г (на 100 г)"
+      },
+      {
+        "role": "assistant",
+        "text": "AI-оценка получена.\n0.0 ккал / Б 0.0 г / Ж 0.0 г / У 0.0 г (на 100 г)"
+      }
+    ]
+  }
+}

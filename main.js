@@ -1,17 +1,25 @@
 /* Calorie Assistant — Obsidian plugin (plain JS, no bundler) */
 const { Plugin, ItemView, Setting, Notice, PluginSettingTab } = require("obsidian");
-const { VIEW_TYPE, DEFAULTS } = require("./consts");
-const { nowStamp } = require("./utils/time");
-const { bytesToBase64 } = require("./utils/bytes");
-const { formatMacros, toNum, extractMacros, extractMacrosFromText, deepExtractMacros, deepExtractMacrosLoose } = require("./utils/macros");
-const { callWorker } = require("./services/worker");
-const note = require("./services/note");
-const { registerVaultModifyWatchers, registerNoteClickHandlers } = require("./services/watchers");
-const { CalorieSettingsTab } = require("./ui/settings-tab");
 
 /** ---------- Defaults & helpers ---------- */
+const VIEW_TYPE = "calorie-assistant-view";
+const DEFAULTS = {
+  workerUrl: "https://holy-sky-7222.almirmunasipov5.workers.dev", // ← ПОМЕНЯЙ на свой
+  notePath: "Food Log.md",
+  appendMode: true,
+  attachPhoto: true,
+  photosFolder: "Food Photos",
+  cameraDefault: false,
+  defaultPortion: 0,
+  dailyTargets: { calories: 0, proteins: 0, fats: 0, carbohydrates: 0 },
+  chatHistoryLimit: 30,
+  autoClearOnFinalize: true,
+  controlsCollapsed: false,
+  fileSectionCollapsed: false,
+  exportToActiveNote: true
+};
 
-// Styles are now provided by styles.css
+// Styles injected into the workspace pane
 const CA_CSS = `
 .ca-container { display:flex; flex-direction:column; height:100%; min-height:0; overflow-y:hidden; -webkit-overflow-scrolling: touch; scroll-padding-bottom: calc(var(--kb-inset, 0px) + 24px); transform: translateY(calc(-1 * var(--kb-inset, 0px))); transition: transform 180ms ease-out; will-change: transform; background:#1e1e1e; }
 /* Обсидиан-хак: гарантируем min-height:0 даже если родитель задаёт иное */
@@ -283,26 +291,176 @@ const CA_CSS = `
 .ca-meal-actions { margin-top: 8px; }
 `;
 
-// moved to utils/bytes.js
+function bytesToBase64(bytes) {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
 
-// moved to utils/macros.js
+function formatMacros(per) {
+  if (!per) return "—";
+  const n = (x) => (x == null ? "—" : Number(x).toFixed(1));
+  return `${n(per.calories)} ккал / Б ${n(per.proteins)} г / Ж ${n(per.fats)} г / У ${n(per.carbohydrates)} г (на 100 г)`;
+}
 
-// moved to utils/macros.js
+function toNum(v) {
+  if (v == null) return null;
+  if (typeof v === 'number') return isFinite(v) ? v : null;
+  if (typeof v === 'string') {
+    // вытащим первое число (может быть '123.4 ккал' или '≈ 56')
+    const m = v.replace(',', '.').match(/[-+]?\d+(?:\.\d+)?/);
+    if (m) return Number(m[0]);
+    return null;
+  }
+  return null;
+}
 
-// moved to utils/macros.js
+function extractMacros(obj) {
+  if (!obj) return {};
+  // Возможные ключи-синонимы
+  const map = {
+    calories: ['calories','kcal','cal','energy','калории'],
+    proteins: ['proteins','protein','белки','белок'],
+    fats: ['fats','fat','жиры','жир'],
+    carbohydrates: ['carbohydrates','carbs','углеводы','углеводы,г']
+  };
+  const out = {};
+  for (const key in map) {
+    for (const k of map[key]) {
+      if (obj[k] != null) { out[key] = toNum(obj[k]); break; }
+    }
+  }
+  return out;
+}
 
 // Попытка извлечь макросы из произвольного текста
-// moved to utils/macros.js
+function extractMacrosFromText(text) {
+  if (typeof text !== 'string' || !text) return {};
+  const norm = text.replace(/,/g, '.');
+  const re = (r)=> { const m = norm.match(r); return m? Number(m[1]) : null; };
+  const calories = re(/([\d.]+)\s*(?:ккал|kcal|кал)/i);
+  const proteins = re(/(?:б|белк(?:и|а)?)\s*([\d.]+)/i);
+  const fats = re(/(?:ж|жир(?:ы|а)?)\s*([\d.]+)/i);
+  const carbohydrates = re(/(?:у|углевод(?:ы|а)?)\s*([\d.]+)/i);
+  const out = { calories, proteins, fats, carbohydrates };
+  return Object.values(out).some(v=> v!=null) ? out : {};
+}
 
 // Глубокий поиск макросов по ответу любого вида (объект/массив/строка)
-// moved to utils/macros.js
+function deepExtractMacros(x, maxDepth=4) {
+  if (!x || maxDepth < 0) return {};
+  if (typeof x === 'string') return extractMacrosFromText(x);
+  if (Array.isArray(x)) {
+    for (const el of x) {
+      const m = deepExtractMacros(el, maxDepth-1);
+      if (Object.values(m).some(v=> v!=null)) return m;
+    }
+    return {};
+  }
+  if (typeof x === 'object') {
+    // сначала проверим прямые ключи
+    const direct = extractMacros(x);
+    if (Object.values(direct).some(v=> v!=null)) return direct;
+    // затем рекурсивно
+    for (const k of Object.keys(x)) {
+      const m = deepExtractMacros(x[k], maxDepth-1);
+      if (Object.values(m).some(v=> v!=null)) return m;
+    }
+  }
+  return {};
+}
 
 // Более "размытый" поиск — ловим ключи по регуляркам: calories_100g, cals, prot_g, fatsTotal, carbsNet и т.п.
-// moved to utils/macros.js
+function deepExtractMacrosLoose(x, maxDepth=4) {
+  if (!x || maxDepth < 0) return {};
+  if (typeof x === 'string') return extractMacrosFromText(x);
+  if (Array.isArray(x)) {
+    for (const el of x) { const m = deepExtractMacrosLoose(el, maxDepth-1); if (Object.values(m).some(v=> v!=null)) return m; }
+    return {};
+  }
+  if (typeof x === 'object') {
+    const out = { calories:null, proteins:null, fats:null, carbohydrates:null };
+    const setIf = (key,val) => { const n = toNum(val); if (n!=null && out[key]==null) out[key]=n; };
+    const ck = /cal|kcal|ккал|energy|кал/i;
+    const pk = /prot|protein|белк/i;
+    const fk = /fat|жир/i;
+    const ck2 = /carb|углевод/i;
+    for (const [k,v] of Object.entries(x)) {
+      if (typeof v === 'object' && v) {
+        const m = deepExtractMacrosLoose(v, maxDepth-1);
+        if (Object.values(m).some(n=> n!=null)) return m;
+      } else {
+        if (ck.test(k)) setIf('calories', v);
+        if (pk.test(k)) setIf('proteins', v);
+        if (fk.test(k)) setIf('fats', v);
+        if (ck2.test(k)) setIf('carbohydrates', v);
+      }
+    }
+    if (Object.values(out).some(n=> n!=null)) return out;
+  }
+  return {};
+}
 
 // Парсит таблицу приёмов внутри секции дня и возвращает {rows:[...], sums}
+function parseDailyTable(section) {
+  // Новая структура: | Время | Блюдо | Ккал/100г | Б/100г | Ж/100г | У/100г | Порция г | Ккал | Б | Ж | У | Комментарий |
+  const lines = section.split(/\n/);
+  const rows = [];
+  const headerMatch = /\|\s*Время\s*\|\s*Блюдо\s*\|\s*Ккал\/100г/i;
+  for (const line of lines) {
+    if (!line.startsWith('|')) continue;
+    if (/^\|[- :]+\|$/.test(line)) continue; // separator only
+    if (headerMatch.test(line)) continue;
+    const partsRaw = line.split('|');
+    let parts = partsRaw.map(p=>p.trim());
+    if (parts[0] === '') parts = parts.slice(1);
+    if (parts[parts.length-1] === '') parts = parts.slice(0,-1);
+    if (parts.length < 12) continue; // not full row
+    const [time,item,kcal100,prot100,fat100,carb100,portion,totalK,totalP,totalF,totalC,comment] = parts;
+    rows.push({
+      time,
+      item,
+      kcal100: toNum(kcal100),
+      prot100: toNum(prot100),
+      fat100: toNum(fat100),
+      carb100: toNum(carb100),
+      portion: toNum(portion),
+      totalK: toNum(totalK),
+      totalP: toNum(totalP),
+      totalF: toNum(totalF),
+      totalC: toNum(totalC),
+      comment
+    });
+  }
+  // Пересчёт итогов из фактических total колонок (если пусты — считаем из per100 * portion)
+  const sums = { calories:0, proteins:0, fats:0, carbohydrates:0 };
+  for (const r of rows) {
+    const k = (r.totalK!=null ? r.totalK : (r.kcal100!=null && r.portion!=null ? r.kcal100 * r.portion / 100 : null));
+    const p = (r.totalP!=null ? r.totalP : (r.prot100!=null && r.portion!=null ? r.prot100 * r.portion / 100 : null));
+    const f = (r.totalF!=null ? r.totalF : (r.fat100!=null && r.portion!=null ? r.fat100 * r.portion / 100 : null));
+    const c = (r.totalC!=null ? r.totalC : (r.carb100!=null && r.portion!=null ? r.carb100 * r.portion / 100 : null));
+    if (k!=null) sums.calories += k;
+    if (p!=null) sums.proteins += p;
+    if (f!=null) sums.fats += f;
+    if (c!=null) sums.carbohydrates += c;
+  }
+  return { rows, sums };
+}
 
-// nowStamp moved to utils/time.js
+function nowStamp() {
+  // Время в московском часовом поясе (Europe/Moscow), формат: YYYY-MM-DD HH:MM:SS
+  const parts = new Intl.DateTimeFormat('en-CA', { // en-CA даёт YYYY-MM-DD порядок для даты
+    timeZone: 'Europe/Moscow',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false
+  }).formatToParts(new Date());
+  const get = (t)=> parts.find(p=>p.type===t)?.value || '';
+  return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}:${get('second')}`;
+}
 
 /** ---------- The View (panel UI) ---------- */
 class CalorieView extends ItemView {
@@ -319,6 +477,9 @@ class CalorieView extends ItemView {
   getIcon() { return "dice"; } // встроенный значок
 
   async onOpen() {
+  // refresh styles so color changes apply even if plugin wasn't reloaded
+  const styleEl = document.getElementById("calorie-assistant-styles");
+  if (styleEl) styleEl.textContent = CA_CSS;
 
     const container = this.containerEl;
     container.empty();
@@ -728,7 +889,7 @@ class CalorieView extends ItemView {
           this.pushAssistant(`Учёл порцию${title} (${grams} г) → ${n(t.calories)} ккал / Б ${n(t.proteins)} / Ж ${n(t.fats)} / У ${n(t.carbohydrates)}`, chat);
         } catch {}
         this.renderChat(chat, true); this.plugin.saveLastSession(this.state);
-        const path = this.plugin.settings.notePath || DEFAULTS.notePath; await note.updateDailySection(this.plugin, path);
+        const path = this.plugin.settings.notePath || DEFAULTS.notePath; await this.updateDailySection(path);
         new Notice('Порция учтена.');
       });
       const applyBtn = panelPhoto.createEl("button", { text: "Применить правку" });
@@ -773,7 +934,7 @@ class CalorieView extends ItemView {
       this.pushAssistant(`Учёл порцию${title} (${grams} г) → ${n(t.calories)} ккал / Б ${n(t.proteins)} / Ж ${n(t.fats)} / У ${n(t.carbohydrates)}`, this.containerEl.querySelector('.ca-chat'));
     } catch {}
     this.renderChat(this.containerEl.querySelector('.ca-chat'), true); this.plugin.saveLastSession(this.state);
-    const path = this.plugin.settings.notePath || DEFAULTS.notePath; await note.updateDailySection(this.plugin, path);
+    const path = this.plugin.settings.notePath || DEFAULTS.notePath; await this.updateDailySection(path);
     new Notice('Порция учтена.');
   });
   manualAiBtn.addEventListener('click', async () => {
@@ -1063,7 +1224,7 @@ class CalorieView extends ItemView {
       let changed = false;
       if (mealId) {
         // Удаляем целиком блок приёма, ориентируясь на ближайшие разделители/заголовок
-        const res = note.removeMealBlockById(text, mealId);
+        const res = removeMealBlockById(text, mealId);
         if (res.removed) {
           text = res.text;
           changed = true;
@@ -1077,7 +1238,7 @@ class CalorieView extends ItemView {
       if (changed) {
         await vault.modify(file, text);
         // Пересчёт таблиц/итогов (если используется дневной режим)
-        await note.updateDailySection(this.plugin, path);
+        await this.updateDailySection(path);
         new Notice('Приём удалён');
       }
 
@@ -1138,11 +1299,7 @@ class CalorieView extends ItemView {
       this.pushAssistant(`**База получена.**\n${formatMacros(res.per_100g)}\n${msg}`, chat);
 
       if (this.plugin.settings.attachPhoto) {
-        const p = await note.savePhotoToVault(this.plugin, file);
-        try {
-          this.state.history.push({ role: 'assistant', text: `Фото сохранено: ${p}` });
-          this.plugin.saveLastSession(this.state);
-        } catch {}
+        await this.savePhotoToVault(file);
       }
     } catch (e) {
       console.error(e);
@@ -1201,20 +1358,14 @@ class CalorieView extends ItemView {
       const path = useActive ? activeFile.path : (this.plugin.settings.notePath || DEFAULTS.notePath);
 
       if (useActive) {
-        const { mealId, stamp } = await note.insertMealAndUpdateTable(this.plugin, path, merged);
-        // Сохраним в состояние для возможных дальнейших действий
-        try {
-          const updated = Object.assign({}, merged, { mealId, ts: stamp });
-          this.state.currentJson = updated;
-          await this.plugin.saveLastSession(this.state);
-        } catch {}
+        await this.insertMealAndUpdateTable(path, merged);
         this.pushAssistant("Приём пищи добавлен в текущую заметку и учтён в таблице.", chat);
       } else {
         const md = res.markdown || "";
-        await note.appendToNote(this.plugin, path, md);
+        await this.appendToNote(path, md);
         // старый сценарий с дневными итогами
         this.recordEntry(merged);
-        await note.updateDailySection(this.plugin, path);
+        await this.updateDailySection(path);
         this.pushAssistant("Итог сохранён в заметку: " + path + " (дневной раздел обновлён)", chat);
       }
       if (this.plugin.settings.autoClearOnFinalize) {
@@ -1517,19 +1668,177 @@ class CalorieView extends ItemView {
 
   async callWorker(payload) {
     const url = this.plugin.settings.workerUrl || DEFAULTS.workerUrl;
-    return callWorker(url, payload);
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const text = await r.text();
+    try { return JSON.parse(text); } catch { return { error: "Bad JSON from worker", raw: text }; }
   }
 
-  /** ---------- Vault helpers moved to services/note ---------- */
+  /** ---------- Vault helpers ---------- */
+  async ensureFolder(path) {
+    const { vault } = this.app;
+    const adapter = vault.adapter;
+    const lastSlash = path.lastIndexOf("/");
+    if (lastSlash === -1) return; // root
+    const folder = path.slice(0, lastSlash);
+    if (!(await adapter.exists(folder))) {
+      await adapter.mkdir(folder);
+    }
+  }
+
+  async appendToNote(path, content) {
+    const { vault } = this.app;
+    await this.ensureFolder(path);
+    const exists = await vault.adapter.exists(path);
+    const stamp = nowStamp();
+    const block = `\n\n---\n**${stamp}**\n\n${content}\n`;
+    if (exists) {
+      const file = vault.getAbstractFileByPath(path);
+      await vault.modify(file, (await vault.read(file)) + block);
+    } else {
+      await vault.create(path, `# Food Log\n${block}`);
+    }
+  }
+
+  async savePhotoToVault(file) {
+    try {
+      const folder = this.plugin.settings.photosFolder || DEFAULTS.photosFolder;
+      await this.ensureFolder(folder + "/a"); // чтобы точно создалась
+      const ext = (file.name?.split(".").pop() || "jpg").toLowerCase();
+      const name = `food_${Date.now()}.${ext}`;
+      const arr = new Uint8Array(await file.arrayBuffer());
+      await this.app.vault.createBinary(`${folder}/${name}`, arr);
+  this.state.history.push({ role: "assistant", text: `Фото сохранено: ${folder}/${name}` });
+      this.plugin.saveLastSession(this.state);
+    } catch (e) {
+      console.warn("Не удалось сохранить фото:", e);
+    }
+  }
 }
 
-/** ---------- Settings Tab moved to ui/settings-tab.js ---------- */
+/** ---------- Settings Tab ---------- */
+class CalorieSettingsTab extends PluginSettingTab {
+  constructor(app, plugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+  }
+  display() {
+    const { containerEl } = this;
+    containerEl.empty();
+    containerEl.createEl("h2", { text: "Calorie Assistant — настройки" });
+
+    new Setting(containerEl)
+      .setName("Worker URL")
+      .setDesc("Адрес Cloudflare Worker (POST).")
+      .addText(t => t
+        .setPlaceholder(DEFAULTS.workerUrl)
+        .setValue(this.plugin.settings.workerUrl || DEFAULTS.workerUrl)
+        .onChange(async (v) => { this.plugin.settings.workerUrl = v.trim(); await this.plugin.saveSettings(); }));
+
+    new Setting(containerEl)
+      .setName("Заметка по умолчанию")
+      .setDesc("Куда писать отчёт (можно с путём). Пример: Food Log.md или Logs/Food.md")
+      .addText(t => t
+        .setPlaceholder(DEFAULTS.notePath)
+        .setValue(this.plugin.settings.notePath || DEFAULTS.notePath)
+        .onChange(async (v) => { this.plugin.settings.notePath = v.trim(); await this.plugin.saveSettings(); }));
+
+    new Setting(containerEl)
+      .setName("Режим добавления")
+      .setDesc("Если включено — отчёты дописываются в конец заметки.")
+      .addToggle(t => t
+        .setValue(this.plugin.settings.appendMode ?? DEFAULTS.appendMode)
+        .onChange(async (v) => { this.plugin.settings.appendMode = v; await this.plugin.saveSettings(); }));
+
+    new Setting(containerEl)
+      .setName("Сохранять фото в хранилище")
+      .addToggle(t => t
+        .setValue(this.plugin.settings.attachPhoto ?? DEFAULTS.attachPhoto)
+        .onChange(async (v) => { this.plugin.settings.attachPhoto = v; await this.plugin.saveSettings(); }));
+
+    new Setting(containerEl)
+      .setName("На мобильном открывать камеру по умолчанию")
+      .setDesc("Если выключено — будет открываться галерея для выбора уже сделанных фото.")
+      .addToggle(t => t
+        .setValue(this.plugin.settings.cameraDefault ?? DEFAULTS.cameraDefault)
+        .onChange(async (v) => { this.plugin.settings.cameraDefault = v; await this.plugin.saveSettings(); }));
+
+    new Setting(containerEl)
+      .setName("Папка для фото")
+      .setDesc("Будет создана при необходимости.")
+      .addText(t => t
+        .setPlaceholder(DEFAULTS.photosFolder)
+        .setValue(this.plugin.settings.photosFolder || DEFAULTS.photosFolder)
+        .onChange(async (v) => { this.plugin.settings.photosFolder = v.trim(); await this.plugin.saveSettings(); }));
+
+    new Setting(containerEl)
+      .setName("Порция по умолчанию (г)")
+      .addText(t => t
+        .setPlaceholder(String(DEFAULTS.defaultPortion))
+        .setValue(String(this.plugin.settings.defaultPortion ?? DEFAULTS.defaultPortion))
+        .onChange(async (v) => { this.plugin.settings.defaultPortion = Number(v) || 0; await this.plugin.saveSettings(); }));
+
+    containerEl.createEl('h3', { text: 'Дневные цели (для процентов в итогах)' });
+    const targets = (this.plugin.settings.dailyTargets = Object.assign({}, DEFAULTS.dailyTargets, this.plugin.settings.dailyTargets||{}));
+
+    const nutrientInput = (label, key) => {
+      new Setting(containerEl)
+        .setName(label)
+        .addText(t => t
+          .setPlaceholder('0')
+          .setValue(String(targets[key]||0))
+          .onChange(async (v)=> { targets[key] = Number(v)||0; this.plugin.settings.dailyTargets = targets; await this.plugin.saveSettings(); }));
+    };
+    nutrientInput('Калории (ккал)', 'calories');
+    nutrientInput('Белки (г)', 'proteins');
+    nutrientInput('Жиры (г)', 'fats');
+    nutrientInput('Углеводы (г)', 'carbohydrates');
+    const hint = containerEl.createEl('div', { text: 'Оставь 0, если не хочешь показывать процент по какому-то показателю.' });
+    hint.style.fontSize = '12px';
+    hint.style.opacity = '0.7';
+
+    containerEl.createEl('h3', { text: 'Чат' });
+    new Setting(containerEl)
+      .setName('Максимум сообщений в истории')
+      .setDesc('Старые сообщения будут удаляться из панели')
+      .addText(t => t
+        .setPlaceholder(String(DEFAULTS.chatHistoryLimit))
+        .setValue(String(this.plugin.settings.chatHistoryLimit ?? DEFAULTS.chatHistoryLimit))
+        .onChange(async v => { this.plugin.settings.chatHistoryLimit = Math.max(5, Number(v)||DEFAULTS.chatHistoryLimit); await this.plugin.saveSettings(); }));
+    new Setting(containerEl)
+      .setName('Очищать карточку после экспорта')
+      .addToggle(t => t
+        .setValue(this.plugin.settings.autoClearOnFinalize ?? DEFAULTS.autoClearOnFinalize)
+        .onChange(async v => { this.plugin.settings.autoClearOnFinalize = v; await this.plugin.saveSettings(); }));
+
+    new Setting(containerEl)
+      .setName('Экспорт в текущую заметку (active file)')
+      .setDesc('Если включено — новый приём пищи добавляется в открытую заметку, а в конце заметки ведётся таблица-итог.')
+      .addToggle(t => t
+        .setValue(this.plugin.settings.exportToActiveNote ?? DEFAULTS.exportToActiveNote)
+        .onChange(async v => { this.plugin.settings.exportToActiveNote = v; await this.plugin.saveSettings(); }));
+
+    new Setting(containerEl)
+      .setName('Сворачивать панель кнопок при открытии')
+      .addToggle(t => t
+        .setValue(this.plugin.settings.controlsCollapsed ?? DEFAULTS.controlsCollapsed)
+        .onChange(async v => { this.plugin.settings.controlsCollapsed = v; await this.plugin.saveSettings(); }));
+  }
+}
 
 /** ---------- Plugin ---------- */
- 
 module.exports = class CalorieAssistantPlugin extends Plugin {
   async onload() {
-    // styles are loaded from styles.css automatically by Obsidian
+
+    if (!document.getElementById("calorie-assistant-styles")) {
+    const style = document.createElement("style");
+    style.id = "calorie-assistant-styles";
+    style.textContent = CA_CSS;
+    document.head.appendChild(style);
+  }
 
   // читаем базу
   this.data = (await this.loadData()) || {};
@@ -1559,9 +1868,173 @@ module.exports = class CalorieAssistantPlugin extends Plugin {
 
     this.addSettingTab(new CalorieSettingsTab(this.app, this));
 
-    // Перенесено в services/watchers
-    registerVaultModifyWatchers(this);
-    registerNoteClickHandlers(this);
+    // Авто пересчёт при ручном редактировании файла
+    this._ignoreModify = false;
+  this.registerEvent(this.app.vault.on('modify', async (file) => {
+      try {
+        if (this._ignoreModify) return;
+        const targetPath = this.settings.notePath || DEFAULTS.notePath;
+        if (file.path !== targetPath) return;
+        const content = await this.app.vault.read(file);
+        const today = nowStamp().slice(0,10);
+        if (!content.includes(`## ${today}`)) return; // нет секции сегодня — ничего
+        // Используем ту же логику что и в view, но без вставки строк: просто пересчёт
+  const heading = `## ${today}`;
+  const marker = `<!--DAILY_TOTALS:${today}-->`;
+        const start = content.indexOf(heading);
+        const next = content.indexOf('\n## ', start+heading.length);
+        let section = next === -1 ? content.slice(start) : content.slice(start, next);
+        // Пересборка таблицы Итоги из Базы при ручном редактировании
+  // heading и marker уже определены выше
+        // удалим старую комбинированную таблицу
+        section = section.replace(/\|\s*Время\s*\|\s*Блюдо\s*\|\s*Ккал\/100г[\s\S]*?\n\n/g, '');
+        // Распарсим базу
+        const baseHeader = '| Время | Блюдо | Ккал/100г | Б/100г | Ж/100г | У/100г | Порция г | Комментарий |';
+        const baseIdx = section.indexOf(baseHeader);
+        let baseRows = [];
+        if (baseIdx !== -1) {
+          let baseEnd = section.indexOf('\n\n', baseIdx); if (baseEnd === -1) baseEnd = section.length;
+          const basePart = section.slice(baseIdx, baseEnd);
+          const lines = basePart.split(/\n/).slice(2);
+          for (const line of lines) {
+            if (!line.startsWith('|')) continue;
+            const cols = line.split('|').map(c=>c.trim()); if (cols.length < 9) continue;
+            baseRows.push({
+              time: cols[1], item: cols[2], kcal100: toNum(cols[3]), prot100: toNum(cols[4]), fat100: toNum(cols[5]), carb100: toNum(cols[6]), portion: toNum(cols[7]), comment: cols[8]||''
+            });
+          }
+        }
+        const fmtCell = (x)=> (x==null||isNaN(x)?'—':Number(x).toFixed(1).replace(/\.0$/,''));
+        const portionHeader = '| Время | Блюдо | Порция г | Ккал | Б | Ж | У | Комментарий |';
+        const portionSep = '|-------|-------|---------:|-----:|--:|--:|--:|-------------|';
+        const portionRows = baseRows.map(r => {
+          const k = (r.kcal100!=null && r.portion!=null)? r.kcal100*r.portion/100 : null;
+          const p = (r.prot100!=null && r.portion!=null)? r.prot100*r.portion/100 : null;
+          const f = (r.fat100!=null && r.portion!=null)? r.fat100*r.portion/100 : null;
+          const c = (r.carb100!=null && r.portion!=null)? r.carb100*r.portion/100 : null;
+          return `| ${r.time} | ${r.item} | ${fmtCell(r.portion)} | ${fmtCell(k)} | ${fmtCell(p)} | ${fmtCell(f)} | ${fmtCell(c)} | ${r.comment} |`;
+        });
+        const headerPos = section.indexOf(portionHeader);
+        if (headerPos !== -1) {
+          const afterHeader = section.indexOf('\n', headerPos + portionHeader.length) + 1;
+          const afterSep = section.indexOf('\n', afterHeader) + 1;
+          let portionEnd = section.indexOf('\n\n', afterSep); if (portionEnd === -1) portionEnd = section.length;
+          section = section.slice(0, headerPos) + portionHeader + '\n' + portionSep + '\n' + portionRows.join('\n') + '\n' + section.slice(portionEnd);
+        }
+        const sums = baseRows.reduce((acc,r)=>{
+          const k=(r.kcal100!=null && r.portion!=null)? r.kcal100*r.portion/100:null; if (k!=null) acc.calories+=k;
+          const p=(r.prot100!=null && r.portion!=null)? r.prot100*r.portion/100:null; if (p!=null) acc.proteins+=p;
+          const f=(r.fat100!=null && r.portion!=null)? r.fat100*r.portion/100:null; if (f!=null) acc.fats+=f;
+          const c=(r.carb100!=null && r.portion!=null)? r.carb100*r.portion/100:null; if (c!=null) acc.carbohydrates+=c;
+          return acc; }, {calories:0,proteins:0,fats:0,carbohydrates:0});
+        const fmt = (n)=> (n==null||isNaN(n)?'—':Math.round(n));
+        const targets = this.settings.dailyTargets || DEFAULTS.dailyTargets;
+        const pct = (val,t)=> t>0? Math.round(val/t*100): null;
+        const pctStr = (p)=> p==null?'' : `${p}%`;
+        const totalLine = `${marker}\n**Итого сейчас:** ${fmt(sums.calories)} ккал / Б ${fmt(sums.proteins)} / Ж ${fmt(sums.fats)} / У ${fmt(sums.carbohydrates)}` +
+          (targets.calories||targets.proteins||targets.fats||targets.carbohydrates
+            ? ` (К ${pctStr(pct(sums.calories,targets.calories))} / Б ${pctStr(pct(sums.proteins,targets.proteins))} / Ж ${pctStr(pct(sums.fats,targets.fats))} / У ${pctStr(pct(sums.carbohydrates,targets.carbohydrates))})` : '' );
+  const pairRe = new RegExp(`${marker}\\n\\*\\*Итого сейчас:[^\\n]*\\n?`,'g');
+  section = section.replace(pairRe, '');
+  section = section.replace(heading, heading+'\n'+totalLine);
+        const newContent = next === -1 ? content.slice(0,start) + section : content.slice(0,start) + section + content.slice(next);
+        if (newContent !== content) {
+          this._ignoreModify = true;
+          await this.app.vault.modify(file, newContent);
+          this._ignoreModify = false;
+        }
+      } catch (e) { console.warn('auto daily recalc failed', e); }
+    }));
+
+    // Синхронизация таблицы приёмов с удалением блоков (MEAL_ID)
+    this.registerEvent(this.app.vault.on('modify', async (file) => {
+      try {
+        if (this._ignoreModify) return;
+        const content = await this.app.vault.read(file);
+        const startMarker = '<!--MEALS_TABLE_START-->';
+        const endMarker = '<!--MEALS_TABLE_END-->';
+        const s = content.indexOf(startMarker);
+        const e = s === -1 ? -1 : content.indexOf(endMarker, s);
+        if (s === -1 || e === -1) return; // нет таблицы — выходим
+
+  const tableBlock = content.slice(s, e);
+  // MEAL_ID из таблицы
+  const tableIds = new Set(Array.from(tableBlock.matchAll(/<!--MEAL_ID:([A-Za-z0-9_-]+)-->/g)).map(m=>m[1]));
+  // Разбиваем контент на части: блоки приёмов вверху (before) и хвост (after)
+  let before = content.slice(0, s);
+  const after = content.slice(e);
+  // MEAL_ID только из части before (где лежат блоки приёмов)
+  const blockIds = new Set(Array.from(before.matchAll(/<!--MEAL_ID:([A-Za-z0-9_-]+)-->/g)).map(m=>m[1]));
+
+        const stale = [...tableIds].filter(id => !blockIds.has(id));
+        const orphanBlocks = [...blockIds].filter(id => !tableIds.has(id));
+
+  let newTable = tableBlock;
+  let newBefore = before;
+  let changed = false;
+
+        // Удаляем строки из таблицы, для которых нет блоков
+        if (stale.length) {
+          for (const id of stale) {
+            const re = new RegExp(`^.*<!--MEAL_ID:${id}-->.*$`, 'm');
+            const before = newTable;
+            newTable = newTable.replace(re, '');
+            if (newTable !== before) changed = true;
+          }
+          newTable = newTable.replace(/\n{3,}/g, '\n\n');
+        }
+
+        // Удаляем блоки приёмов, для которых нет строк в таблице (обратная синхронизация)
+        if (orphanBlocks.length) {
+          for (const id of orphanBlocks) {
+            const blockRe = new RegExp(`\n---\n#### Приём пищи[\s\S]*?<!--MEAL_ID:${id}-->[\s\S]*?(?=\n---|$)`, 'g');
+            const prev = newBefore;
+            newBefore = newBefore.replace(blockRe, '');
+            if (newBefore !== prev) changed = true;
+          }
+          newBefore = newBefore.replace(/\n{3,}/g, '\n\n');
+        }
+
+        if (!changed) return;
+  const newContent = newBefore + newTable + after;
+        if (newContent !== content) {
+          this._ignoreModify = true;
+          await this.app.vault.modify(file, newContent);
+          this._ignoreModify = false;
+        }
+      } catch (err) {
+        console.warn('sync meals table failed', err);
+      }
+    }));
+
+    // Глобальный обработчик кликов по кнопке "Обновить таблицу"
+    const clickHandler = async (evt) => {
+      const el = evt.target;
+      if (!(el instanceof HTMLElement)) return;
+      try {
+        const activeFile = this.app.workspace.getActiveFile?.();
+        if (!activeFile) return;
+        // refresh table
+        if (el.classList.contains('ca-refresh-table-btn')) {
+          await this.rebuildMealsTable(activeFile.path);
+          new Notice('Таблица обновлена');
+          return;
+        }
+        // delete meal inside note
+        if (el.classList.contains('ca-delete-meal-btn')) {
+          const mealId = el.getAttribute('data-meal-id');
+          await this.deleteMealByIdFromNote(activeFile.path, mealId);
+          await this.rebuildMealsTable(activeFile.path);
+          new Notice('Приём удалён');
+          return;
+        }
+      } catch (err) {
+        console.warn('note click handler failed', err);
+        new Notice('Ошибка операции');
+      }
+    };
+    document.addEventListener('click', clickHandler, true);
+    this.register(() => document.removeEventListener('click', clickHandler, true));
   }
 
   onunload() {}
@@ -1663,7 +2136,7 @@ module.exports = class CalorieAssistantPlugin extends Plugin {
       const file = vault.getAbstractFileByPath(path);
       if (!file) return;
       let text = await vault.read(file);
-      const res = note.removeMealBlockById(text, mealId);
+      const res = removeMealBlockById(text, mealId);
       text = res.text;
       const rowRe = new RegExp(`^.*<!--MEAL_ID:${mealId}-->.*$`, 'm');
       text = text.replace(rowRe, '');
@@ -1676,4 +2149,61 @@ module.exports = class CalorieAssistantPlugin extends Plugin {
 
 // Вспомогательная функция: удалить из Markdown весь блок Приёма, окружающий данный MEAL_ID
 // Ищет ближайший разделитель \n--- перед заголовком "#### Приём пищи" и следующий \n--- или конец файла
-// removeMealBlockById moved to services/note.js
+function removeMealBlockById(text, mealId) {
+  try {
+    const token = `<!--MEAL_ID:${mealId}-->`;
+    const idIdx = text.indexOf(token);
+    if (idIdx === -1) return { text, removed: false };
+
+    // 1) Точно определяем начало блока: последнее вхождение шаблона начала блока приёма до токена
+    // Шаблон: (начало строки или \n)---\n#### Приём пищи ...
+    const starts = [];
+    const startRe = /(^|\n)---\r?\n#### Приём пищи[^\n]*\n/g;
+    let m;
+    while ((m = startRe.exec(text)) !== null) {
+      const start = m.index + (m[1] ? m[1].length : 0); // позиция непосредственно перед '---'
+      if (start < idIdx) starts.push(start);
+      else break; // дальше только после токена, можно остановиться
+    }
+    let startIdx = starts.length ? starts[starts.length - 1] : -1;
+
+    if (startIdx === -1) {
+      // Fallback: найдём ближайший заголовок #### Приём пищи перед токеном, затем подняться к предыдущей пустой строке или началу файла
+      const headerRe = /(^|\n)#### Приём пищи[^\n]*\n/g;
+      let headerIdx = -1;
+      while ((m = headerRe.exec(text)) !== null) {
+        if (m.index < idIdx) headerIdx = m.index + (m[1] ? m[1].length : 0); else break;
+      }
+      if (headerIdx !== -1) {
+        // Поднимемся до ближайшего разделителя блока '---' перед заголовком, если есть, иначе начала файла/пустой строки
+        const uptoHeader = text.slice(0, headerIdx);
+        const dashIdx = uptoHeader.lastIndexOf('\n---\r?\n');
+        startIdx = dashIdx !== -1 ? dashIdx + 1 : headerIdx; // +1 чтобы включить начальный перевод строки
+      } else {
+        // Не нашли ничего осмысленного — не рискуем
+        return { text, removed: false };
+      }
+    }
+
+    // 2) Конец блока — следующее начало блока приёма или граница таблицы, иначе конец файла
+    let endIdx = text.length;
+    startRe.lastIndex = startIdx + 1; // продолжим поиск стартов после текущего начала
+    while ((m = startRe.exec(text)) !== null) {
+      const s = m.index + (m[1] ? m[1].length : 0);
+      if (s > idIdx) { endIdx = s; break; }
+    }
+    // Не заходим на таблицу приёмов
+    const tableMarker = '<!--MEALS_TABLE_START-->';
+    const tableStartIdx = text.indexOf(tableMarker, idIdx);
+    if (tableStartIdx !== -1 && tableStartIdx < endIdx) {
+      endIdx = tableStartIdx;
+    }
+
+    // Вырезать блок и почистить лишние пустые строки
+    let newText = text.slice(0, startIdx) + text.slice(endIdx);
+    newText = newText.replace(/\n{3,}/g, '\n\n').replace(/^\s+$/gm, '');
+    return { text: newText, removed: true };
+  } catch {
+    return { text, removed: false };
+  }
+}
