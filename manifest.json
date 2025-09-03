@@ -1,0 +1,11 @@
+{
+  "id": "calorie-assistant",
+  "name": "Calorie Assistant",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Фото → калории → чат-правки → финальный отчёт в заметку (через ваш Cloudflare Worker).",
+  "author": "Your Name",
+  "authorUrl": "https://example.com",
+  "main": "main.js",
+  "isDesktopOnly": false
+}
