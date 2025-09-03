@@ -1,26 +1,15 @@
 /* Calorie Assistant — Obsidian plugin (plain JS, no bundler) */
 const { Plugin, ItemView, Setting, Notice, PluginSettingTab } = require("obsidian");
+const { VIEW_TYPE, DEFAULTS } = require("./consts");
+const { nowStamp } = require("./utils/time");
+const { bytesToBase64 } = require("./utils/bytes");
+const { formatMacros, toNum, extractMacros, extractMacrosFromText, deepExtractMacros, deepExtractMacrosLoose } = require("./utils/macros");
+const { callWorker } = require("./services/worker");
 
 /** ---------- Defaults & helpers ---------- */
-const VIEW_TYPE = "calorie-assistant-view";
-const DEFAULTS = {
-  workerUrl: "https://holy-sky-7222.almirmunasipov5.workers.dev", // ← ПОМЕНЯЙ на свой
-  notePath: "Food Log.md",
-  appendMode: true,
-  attachPhoto: true,
-  photosFolder: "Food Photos",
-  cameraDefault: false,
-  defaultPortion: 0,
-  dailyTargets: { calories: 0, proteins: 0, fats: 0, carbohydrates: 0 },
-  chatHistoryLimit: 30,
-  autoClearOnFinalize: true,
-  controlsCollapsed: false,
-  fileSectionCollapsed: false,
-  exportToActiveNote: true
-};
 
-// Styles injected into the workspace pane
-const CA_CSS = `
+// Styles are now provided by styles.css
+const CA_CSS = null;
 .ca-container { display:flex; flex-direction:column; height:100%; min-height:0; overflow-y:hidden; -webkit-overflow-scrolling: touch; scroll-padding-bottom: calc(var(--kb-inset, 0px) + 24px); transform: translateY(calc(-1 * var(--kb-inset, 0px))); transition: transform 180ms ease-out; will-change: transform; background:#1e1e1e; }
 /* Обсидиан-хак: гарантируем min-height:0 даже если родитель задаёт иное */
 .view-content .ca-container { min-height: 0 !important; }
@@ -477,9 +466,6 @@ class CalorieView extends ItemView {
   getIcon() { return "dice"; } // встроенный значок
 
   async onOpen() {
-  // refresh styles so color changes apply even if plugin wasn't reloaded
-  const styleEl = document.getElementById("calorie-assistant-styles");
-  if (styleEl) styleEl.textContent = CA_CSS;
 
     const container = this.containerEl;
     container.empty();
@@ -1668,13 +1654,7 @@ class CalorieView extends ItemView {
 
   async callWorker(payload) {
     const url = this.plugin.settings.workerUrl || DEFAULTS.workerUrl;
-    const r = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-    const text = await r.text();
-    try { return JSON.parse(text); } catch { return { error: "Bad JSON from worker", raw: text }; }
+    return callWorker(url, payload);
   }
 
   /** ---------- Vault helpers ---------- */
@@ -1832,13 +1812,7 @@ class CalorieSettingsTab extends PluginSettingTab {
 /** ---------- Plugin ---------- */
 module.exports = class CalorieAssistantPlugin extends Plugin {
   async onload() {
-
-    if (!document.getElementById("calorie-assistant-styles")) {
-    const style = document.createElement("style");
-    style.id = "calorie-assistant-styles";
-    style.textContent = CA_CSS;
-    document.head.appendChild(style);
-  }
+    // styles are loaded from styles.css automatically by Obsidian
 
   // читаем базу
   this.data = (await this.loadData()) || {};
