@@ -4,8 +4,8 @@
   "version": "0.1.2",
   "minAppVersion": "1.4.0",
   "description": "Фото → калории → чат-правки → финальный отчёт в заметку (через ваш Cloudflare Worker).",
-  "author": "Your Name",
-  "authorUrl": "https://example.com",
+  "author": "Almir Munasipov",
+  "authorUrl": "https://github.com/Almir228",
   "main": "main.js",
   "isDesktopOnly": false
 }

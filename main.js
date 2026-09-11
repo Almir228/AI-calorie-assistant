@@ -4,7 +4,7 @@ const { Plugin, ItemView, Setting, Notice, PluginSettingTab } = require("obsidia
 /** ---------- Defaults & helpers ---------- */
 const VIEW_TYPE = "calorie-assistant-view";
 const DEFAULTS = {
-  workerUrl: "https://holy-sky-7222.almirmunasipov5.workers.dev", // ← ПОМЕНЯЙ на свой
+  workerUrl: "", // Set your own compatible service in the plugin settings.
   notePath: "Food Log.md",
   appendMode: true,
   attachPhoto: true,
@@ -959,16 +959,13 @@ class CalorieView extends ItemView {
         for (const v of variants) {
           try {
             const r = await this.callWorker(v);
-            console.log('Worker response:', JSON.stringify(r, null, 2));
             if (r) {
               if (typeof r.raw === 'string') lastRaw = r.raw;
               // 1) глубокий поиск по любому объекту
               const deep = deepExtractMacros(r);
-              console.log('Deep extracted:', deep);
               if (Object.values(deep).some(v=> v!=null)) { per = deep; res = r; break; }
               // 1b) размытый поиск по ключам
               const loose = deepExtractMacrosLoose(r);
-              console.log('Loose extracted:', loose);
               if (Object.values(loose).some(v=> v!=null)) { per = loose; res = r; break; }              // 2) классические места
               const candidates = [
                 r.per_100g, r.per100, r.base,
@@ -1666,8 +1663,10 @@ class CalorieView extends ItemView {
     }
   }
 
+  /** Send one JSON request to the explicitly configured estimation service. */
   async callWorker(payload) {
-    const url = this.plugin.settings.workerUrl || DEFAULTS.workerUrl;
+    const url = this.plugin.settings.workerUrl?.trim();
+    if (!url) throw new Error("Укажите Worker URL в настройках Calorie Assistant.");
     const r = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -1734,7 +1733,7 @@ class CalorieSettingsTab extends PluginSettingTab {
       .setName("Worker URL")
       .setDesc("Адрес Cloudflare Worker (POST).")
       .addText(t => t
-        .setPlaceholder(DEFAULTS.workerUrl)
+        .setPlaceholder("https://your-worker.example.com")
         .setValue(this.plugin.settings.workerUrl || DEFAULTS.workerUrl)
         .onChange(async (v) => { this.plugin.settings.workerUrl = v.trim(); await this.plugin.saveSettings(); }));
 
