@@ -1,97 +1,97 @@
 # AI Calorie Assistant
 
-An Obsidian plugin for turning a meal photo or text description into an editable nutrition estimate and a Markdown food log. A personal product prototype written in JavaScript.
+Плагин Obsidian, который превращает фотографию или текстовое описание блюда в редактируемую оценку пищевой ценности и запись дневника питания в Markdown. Личный продуктовый прототип на JavaScript.
 
-## Overview
+## Обзор
 
-The plugin keeps meal estimation, corrections and note export in one Obsidian panel. Nutrition estimates come from a separately configured HTTP service; this repository contains the plugin client, **not the AI backend or a trained model**.
+Оценка блюда, исправления и экспорт в заметку собраны в одной панели Obsidian. Пищевую ценность рассчитывает отдельно настроенный HTTP-сервис; этот репозиторий содержит **клиент плагина, без серверной реализации ИИ или обученной модели**.
 
-## Motivation
+## Мотивация
 
-Recording a meal often means switching between an image, a nutrition tool and a diary. This project explores a shorter workflow inside an existing note-taking environment. No measured time savings, recognition accuracy or user adoption are claimed.
+Запись блюда часто требует переключений между фотографией, инструментом оценки питания и дневником. Проект исследует более короткий сценарий внутри привычной среды заметок. Измеренная экономия времени, точность распознавания и пользовательская востребованность не заявляются.
 
-## Features
+## Возможности
 
-- Select a meal image and send it to a configured Worker for estimation.
-- Request estimates from a dish name and description; the client tries several request formats.
-- Send text corrections to the service and adjust portion weight.
-- Display calories, protein, fat and carbohydrates per 100 g and for a portion.
-- Export meal blocks and daily totals to Markdown notes; optionally save photos in the vault.
-- Configure daily targets, history length and export behaviour; restore the last local session.
-- Recalculate note tables and remove meal entries through the implemented controls.
+- Выбор фотографии блюда и отправка настроенному Worker для оценки.
+- Оценка по названию и описанию блюда; клиент пробует несколько форматов запроса.
+- Отправка текстовых корректировок и изменение массы порции.
+- Отображение калорий, белков, жиров и углеводов на 100 г и на порцию.
+- Экспорт блоков блюд и суточных итогов в Markdown; при необходимости — сохранение фотографий в хранилище.
+- Настройка суточных целей, длины истории и экспорта; восстановление последнего локального сеанса.
+- Пересчёт таблиц заметки и удаление записей о блюдах через реализованные элементы управления.
 
-These are client-side behaviours visible in the code. Remote estimation requires a compatible service and has not been validated against a bundled backend.
+Эти возможности видны в клиентском коде. Удалённая оценка требует совместимого сервиса и не проверена с серверной реализацией из этого репозитория: её здесь нет.
 
-## How it works
+## Как это работает
 
-1. `main.js` registers an Obsidian view, commands, settings and vault event handlers.
-2. The panel encodes a selected image as base64 or builds a text/correction request.
-3. `callWorker` sends JSON using `fetch` to the configured URL.
-4. The response is interpreted as nutrition data; local helpers calculate portion totals.
-5. Obsidian's vault API writes Markdown and, optionally, the photo.
+1. `main.js` регистрирует представление Obsidian, команды, настройки и обработчики событий хранилища.
+2. Панель кодирует изображение в base64 либо формирует текстовый запрос или корректировку.
+3. `callWorker` отправляет JSON через `fetch` на настроенный URL.
+4. Ответ разбирается как данные о питании; локальные функции рассчитывают значения для порции.
+5. API хранилища Obsidian записывает Markdown и, при необходимости, фотографию.
 
-The plugin stores settings and the last session in local `data.json`. Meal text and photos are sent to the configured service when remote estimation is used. Service credentials belong on the server; the current client has no authentication-header setting.
+Настройки и последний сеанс хранятся в локальном `data.json`. При удалённой оценке текст блюда и фотографии передаются настроенному сервису. Учётные данные сервиса должны храниться на сервере; настройки заголовка авторизации в текущем клиенте нет.
 
-### Client API contract
+### Контракт клиентского API
 
-The service must accept `POST` requests with `Content-Type: application/json`:
+Сервис должен принимать запросы `POST` с `Content-Type: application/json`:
 
-| Action | Payload used by the client |
+| Действие | Тело запроса клиента |
 |---|---|
-| Photo | `{"image_b64":"<base64>","mime":"image/jpeg"}` |
-| Text (first attempted format) | `{"mode":"text","item":"Oatmeal","description":"With milk","language":"ru"}` |
-| Correction | `{"previous_json":{},"instruction":"Change the ingredients","portion_g":200}` |
-| Finalize | `{"mode":"final","previous_json":{}}` |
+| Фотография | `{"image_b64":"<base64>","mime":"image/jpeg"}` |
+| Текст (первый проверяемый формат) | `{"mode":"text","item":"Oatmeal","description":"With milk","language":"ru"}` |
+| Корректировка | `{"previous_json":{},"instruction":"Change the ingredients","portion_g":200}` |
+| Завершение | `{"mode":"final","previous_json":{}}` |
 
-The UI expects fields such as `item`, `per_100g` (`calories`, `proteins`, `fats`, `carbohydrates`), `portion_g`, `portion_totals`, `message` and optionally `markdown`. This is inferred from the client, not a versioned server specification. A failure can be returned as `{"error":"Explanation"}`. The service must allow requests from the Obsidian environment. No provider, model, prompt or deployment instructions can be verified from this repository.
+Интерфейс ожидает поля `item`, `per_100g` (`calories`, `proteins`, `fats`, `carbohydrates`), `portion_g`, `portion_totals`, `message` и необязательное `markdown`. Описание выведено из клиентского кода и не является версионированной серверной спецификацией. Ошибка может возвращаться как `{"error":"Explanation"}`. Сервис должен разрешать запросы из среды Obsidian. Провайдер, модель, промпт и инструкции развёртывания не подтверждаются содержимым репозитория.
 
-## Project structure
+## Структура проекта
 
 ```text
-main.js                 Active plugin entry point: UI, CSS, HTTP, note handling
-manifest.json           Obsidian plugin identity and minimum version
-assets/README.md        Instructions for adding real screenshots
-.gitignore              Excludes local sessions, secrets and generated files
+main.js                 Точка входа: интерфейс, CSS, HTTP и работа с заметками
+manifest.json           Идентификатор плагина и минимальная версия Obsidian
+assets/README.md        Инструкции по добавлению настоящих скриншотов
+.gitignore              Исключение локальных сеансов, секретов и создаваемых файлов
 ```
 
-Previously committed empty `services/` and `ui/` placeholders and unused helper copies were not connected to `main.js`; they have been removed from the current tree. Their history remains available in Git.
+Пустые заготовки `services/` и `ui/` и неиспользуемые копии вспомогательных функций не были связаны с `main.js` и удалены из текущего дерева. Их история доступна в Git.
 
-## Tech stack
+## Технологии
 
-JavaScript (CommonJS), Obsidian Plugin API, embedded CSS, browser File/base64 APIs, `fetch`, Markdown and JSON. The endpoint is intended for a Cloudflare Worker, whose implementation is not included. There is no Python, npm dependency installation or build step in this client.
+JavaScript (CommonJS), Obsidian Plugin API, встроенный CSS, браузерные API File/base64, `fetch`, Markdown и JSON. Предполагается адрес Cloudflare Worker, реализация которого не включена. Клиент не использует Python, установку зависимостей npm или этап сборки.
 
-## Installation / Run
+## Установка и запуск
 
-1. Install Obsidian **1.4.0 or later** (the version declared by `manifest.json`).
-2. Create a test vault and the directory `.obsidian/plugins/calorie-assistant/` inside it.
-3. Copy `main.js` and `manifest.json` into that directory.
-4. Enable community plugins for that vault, reload Obsidian and enable **Calorie Assistant**.
-5. In the plugin settings, enter the URL of a compatible service you control. The default is empty; remote calls fail with a configuration message until it is set.
-6. Use the command **Open Calorie Assistant** or its ribbon icon.
+1. Установите Obsidian **1.4.0 или новее** — версия указана в `manifest.json`.
+2. Создайте тестовое хранилище и каталог `.obsidian/plugins/calorie-assistant/` внутри него.
+3. Скопируйте туда `main.js` и `manifest.json`.
+4. Разрешите сторонние плагины, перезагрузите Obsidian и включите **Calorie Assistant**.
+5. В настройках плагина укажите URL совместимого сервиса под вашим управлением. По умолчанию адрес пуст; до настройки удалённые вызовы завершаются сообщением об ошибке конфигурации.
+6. Используйте команду **Open Calorie Assistant** или значок на боковой панели.
 
-The panel can be installed locally, but end-to-end AI analysis cannot be reproduced from this repository alone. It is not a standalone web page and cannot run with `node main.js`.
+Панель устанавливается локально, но полностью воспроизвести ИИ-анализ только по этому репозиторию нельзя. Это плагин Obsidian: запуск через `node main.js` и использование как отдельной веб-страницы не предусмотрены.
 
-## Example workflow
+## Пример использования
 
-Open a test note, select a non-sensitive meal photo, and request an estimate through your configured service. Review the returned values, set the portion in grams, optionally send a correction, and export the result. Inspect the created meal block and daily table in the active note. No example calorie values are supplied as verified nutrition facts.
+Откройте тестовую заметку, выберите фотографию блюда без личной информации и запросите оценку через настроенный сервис. Проверьте результат, задайте массу порции, при необходимости отправьте корректировку и экспортируйте запись. Просмотрите созданный блок блюда и таблицу суточных итогов в активной заметке. Примерные значения калорий не выдаются за проверенные сведения о питании.
 
-## Current limitations
+## Текущие ограничения
 
-- Backend code, credentials, model choice and recognition evaluation are absent.
-- Estimates require review; neither nutritional accuracy nor clinical suitability has been measured.
-- `main.js` is a roughly 2,200-line module mixing UI, parsing and persistence.
-- Response parsing is permissive and tries multiple text request formats; schema validation, HTTP-status handling, timeout and retry policy need work.
-- Note updates depend on the expected Markdown layout. Test changes in a disposable vault first.
-- Timestamps use `Europe/Moscow`; mobile support is declared in the manifest but has not been verified across devices.
-- No automated integration suite or real screenshots are included. Local sessions removed from the current tree remain in older Git commits.
+- Нет серверного кода, учётных данных, выбора модели и оценки качества распознавания.
+- Оценки требуют проверки; точность пищевой ценности и пригодность для медицинского применения не измерялись.
+- `main.js` — модуль примерно на 2200 строк, совмещающий интерфейс, разбор ответов и сохранение.
+- Разбор ответа допускает разные форматы, а текстовые запросы отправляются в нескольких вариантах. Нужна доработка проверки схемы, обработки HTTP-статусов, тайм-аутов и повторных попыток.
+- Обновление заметок зависит от ожидаемой структуры Markdown. Изменения сначала следует проверять во временном хранилище.
+- Временные метки используют `Europe/Moscow`; поддержка мобильных устройств объявлена в манифесте, но не проверена на разных устройствах.
+- Нет автоматических интеграционных тестов и настоящих скриншотов. Удалённые из текущего дерева локальные сеансы остаются в старых коммитах Git.
 
-## Possible improvements
+## Возможные улучшения
 
-1. Publish a minimal backend contract and reproducible service implementation with server-side credentials.
-2. Add tests for response parsing and Markdown round trips, then extract CSS, Worker access, nutrition helpers, view and note persistence into small modules. Do this incrementally.
-3. Add explicit estimate uncertainty, request errors and user-controlled history retention.
-4. With opt-in instrumentation, evaluate completion rate and time from input to saved note; there are no collected product metrics in this repository.
+1. Опубликовать минимальный серверный контракт и воспроизводимую реализацию сервиса с хранением учётных данных на сервере.
+2. Добавить тесты разбора ответов и чтения/записи Markdown, затем постепенно выделить CSS, доступ к Worker, расчёты питания, представление и сохранение заметок в небольшие модули.
+3. Явно показывать неопределённость оценки и ошибки запросов, дать пользователю управление сроком хранения истории.
+4. При добровольном сборе статистики оценить долю завершённых сценариев и время от ввода до сохранения заметки. Собранных продуктовых метрик в репозитории нет.
 
-## Screenshots
+## Скриншоты
 
-See [assets/README.md](assets/README.md) for two suggested screenshots. Add actual captures after running the plugin; mockups should not be presented as evidence of a working integration.
+В [assets/README.md](assets/README.md) описаны два предлагаемых снимка. Добавлять следует настоящие скриншоты после запуска плагина; макеты не должны служить доказательством работающей интеграции.

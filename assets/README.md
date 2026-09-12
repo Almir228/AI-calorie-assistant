@@ -1,8 +1,8 @@
-# Screenshot checklist
+# Какие скриншоты добавить
 
-Use a disposable Obsidian vault and a non-sensitive meal example.
+Используйте временное хранилище Obsidian и пример блюда без личной информации.
 
-1. `meal-review.png`: the plugin panel with a returned estimate and the portion/correction controls. Capture only after a real compatible service responds.
-2. `food-log.png`: the exported Markdown meal block and daily totals in the test note.
+1. `meal-review.png`: панель плагина с полученной оценкой и элементами управления порцией и корректировками. Снимок делайте только после ответа настоящего совместимого сервиса.
+2. `food-log.png`: экспортированный блок блюда в Markdown и суточные итоги в тестовой заметке.
 
-Exclude private notes, account names, service URLs and local settings. After capture, add `![Meal review](assets/meal-review.png)` and `![Food log](assets/food-log.png)` to the top-level README. No placeholder image is committed.
+Уберите из кадра личные заметки, имена аккаунтов, адреса сервисов и локальные настройки. После съёмки добавьте в основной README `![Проверка блюда](assets/meal-review.png)` и `![Дневник питания](assets/food-log.png)`. Изображений-заглушек в репозитории нет.
